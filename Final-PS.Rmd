@@ -1,0 +1,388 @@
+---
+title: "A Statistical Analysis of the 2019 Canadian Federal Election with a 100% Voter Turnout"
+author: "Diana Azriel"
+date: "21/12/2020"
+output:
+  rmarkdown::pdf_document:
+    fig_caption: yes        
+    includes:  
+      in_header: plots_config.tex
+---
+
+
+
+## Abstract
+
+|     This paper examines the importance of voter participation by predicting the 2019 Canadian Federal Election Results assuming a 100% voter participation. Using a logistic regression model, we use age, gender, province, and primary home language to predict the likelihood of an individual voting for the Liberal Party in 2019. Then, using the 2017 General Social Survey on Families, we post-stratify to predict the overall popular vote results for the Liberal Party to be 34.4%. Code and data supporting this analysis can be found in the following repository: https://github.com/dianaazriel/STA304-PS4
+
+
+## Keywords
+
+MRP, 2019 Canadian Federal Election, Liberal Party, Conservative Party, Election Turnout, Justin Trudeau, Andrew Scheer
+
+## Introduction
+
+|     Voting is a fundamental right of all Canadian citizens, and the extent to which eligible voters participate in the democratic process is an indicator of societal and political engagement in Canada. In 2019, the Liberal Party did not win the popular vote, gaining 33% of votes while Conservatives gained 34%. However, the voter turnout in the 2019 Canadian Federal Election was only 77%. Interestingly, voter turnout among younger people did not change from 2015 election numbers to those of 2019. This paper will examine the popular vote results if everyone had voted in the election. Furthermore, it will use age, gender, province, and primary home language to determine whether or not an individual will vote for the Liberal Party. This will be done using a logistic regression model. Then, the data will be post-stratified using census data to analyze how a 100% voter turnout would have altered the results of the election. 
+
+## Data
+
+### PES Election Survey
+
+|     The Consortium on Electoral Democracy (CDEM) released the results of "Canada Election Study 2019", which was an online survey conducted between Sept 13th, to Oct 21st for its campaign period survey, and Oct 24th to Nov 11th for its post-election survey. The survey was offered in both English and French and included 720 variables.  
+
+|     The population in this survey was all Canadian citizens or permanent residents aged 18 or older. The frame included all those who were contacted to answer the survey. Some respondents had to be removed from the dataset to due reasons including, but not limited to, not consenting to the survey, not being a Canadian citizen, not meeting the age requirement of 18 years  and older etc. After cleaning, the sample included 37,822 people who were interviewed in the pre-election survey and 10,337 who were interviewed in the post-election survey. 
+
+|     The online sample was produced through Qualtrics and used stratification by region, gender, and age to produce a representative sample. Approximately 10,000 of those surveyed initially were re-contacted after the election to provide post-election information.
+
+|     This survey was quite strong as it aimed to have an appropriate representation and balance in gender and age groups within each region. It also had proper representation of French and English speakers in different regions, for example, an 80-20 French-English ratio in Quebec. In addition, the survey used respondent's panel ID to match responses between the Campaign Period and Post Election Surveys. 
+
+|     However, the survey also had some duplicate or incomplete responses, which affected the data quality. Furthermore, respondents were able to refuse to answer any given questions, which meant that "Don't know/ Prefer not to answer" was added as an option to required responses. Thus, some responses had to be recorded as missing. 
+
+
+### 2017 General Social Survey on Families 
+
+|     The 2017 General Social Survey on Families was used for post-stratification analysis. This survey is conducted every 5 years with the objective of gathering data on social trends of Canadians. The 2017 survey in particular was collected between Feb 1st and Nov 30th of 2017. The target population was all non-institutionalized persons 15 years of age or older who live in the 10 provinces of Canada. For the purpose of this analysis, individuals younger than 18 years of age were removed from the dataset. Sampling was done with a cross-sectional design that combined landline and cellular telephone numbers from Statistics Canada's sources. Only one eligible person per household was interviewed. The stratification method, which produced 27 strata in total, was used to carry out sampling.
+
+|     Some strengths of this data include its rigorous data collection and large sample. Approximately 43,000 people were sampled. Additionally, the survey is quite extensive and reports on a variety of information such as age, sex, family income, family size, and more. The questions in the survey are clear and leave little room for ambiguity.
+
+|     In terms of weaknesses, since all respondents were interviewed by telephone, households without landline telephones were therefore excluded from the study. Additionally, the exclusion of Canada's 3 territories - Nunavut, Yukon, and Northwest Territories, poses some issues in this analysis. Unfortunately, respondents in the PES survey from the 3 territories had to be removed. Finally, the GSS only collected information on respondents' sex, and not gender. Therefore, to match results with the PES results, gender was imputed on the assumption that males identify as a "Man", and females as a "Woman". 
+
+
+
+```{r, include = FALSE, echo=FALSE}
+library(haven)
+library(tidyverse)
+library(janitor)
+library(survey)
+library(ggplot2)
+library(lme4)
+library(pander)
+
+# change this to your working directory
+setwd("/Users/dianaazriel/Documents/University/Fifth Year/STA304/Final PS")
+
+# Read in the raw data
+raw_data <- read_dta("2019 Canadian Election Study - Online Survey v1.0.dta")
+
+# after cleaning of the gss files, it should be saved as "gss.csv" in your working directory
+census_data <- read_csv("gss.csv")
+
+
+#Clean the census data 
+clean_census <- census_data %>% 
+  select(age,
+         sex,
+         language_home,
+         province) %>% 
+  drop_na() %>% 
+  filter(age >= 18) %>% 
+  mutate(language_home = ifelse(language_home == "French", "French", "Not French")) %>% 
+  mutate(age = round(age)) %>% 
+  mutate(gender = ifelse(sex== "Male", "Man", "Woman"))
+
+# Count groups for Post Stratification
+census_grouped <- clean_census %>% 
+  count(age, gender, language_home, province) %>%
+  group_by(age, gender, language_home, province) 
+
+
+clean_data <- raw_data %>%
+  select(pes19_province, 
+         pes19_votechoice2019,
+         cps19_age,
+         cps19_gender,
+         pes19_lang
+         ) %>% 
+  drop_na() %>% 
+  mutate(vote_liberal = ifelse(pes19_votechoice2019==1, 1, 0)) %>%
+  mutate(vote_conservative = ifelse(pes19_votechoice2019 == 2, 1,0)) %>% 
+  mutate(age=cps19_age) %>% 
+  filter(!pes19_province %in% c(6,8,13)) %>% 
+  mutate(province = case_when(
+           pes19_province ==1 ~ "Alberta",
+         pes19_province ==2 ~ "British Columbia",
+         pes19_province ==3 ~ "Manitoba",
+         pes19_province ==4 ~ "New Brunswick",
+         pes19_province ==5 ~ "Newfoundland and Labrador",
+         #pes19_province ==6 ~ "Northwest Territories",
+         pes19_province ==7 ~ "Nova Scotia",
+         #pes19_province ==8 ~ "Nunavut",
+         pes19_province ==9 ~ "Ontario",
+         pes19_province ==10 ~ "Prince Edward Island",
+         pes19_province ==11 ~ "Quebec",
+         pes19_province ==12 ~ "Saskatchewan"
+         #pes19_province ==13 ~ "Yukon"
+         )) %>% 
+  mutate(gender = case_when(
+      cps19_gender == 1 ~ "Man",
+      cps19_gender == 2 ~ "Woman",
+      cps19_gender == 3 ~ "Woman"
+      )) %>% 
+  mutate(language_home = ifelse(pes19_lang == 69, "French", "Not French"))
+
+clean_data <- clean_data %>% 
+  select(age,
+         gender,
+         province,
+         language_home,
+         vote_liberal,
+         vote_conservative
+         )
+
+```
+
+\newpage
+
+### Data Visualization
+
+
+```{r,echo=FALSE, fig.cap ="PES and Census Respondents Count by Province",fig.show="hold", out.width="50%"}
+
+ggplot(data=clean_data, mapping=aes(x=province))+
+   theme(plot.title = element_text(hjust = 0.5), axis.text=element_text(size=6), axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))+
+  ggtitle("PES Respondents Count by Province")+
+  geom_bar()
+
+clean_census %>% 
+  ggplot(data=clean_census, mapping=aes(x=province))+
+   theme(plot.title = element_text(hjust = 0.5), axis.text=element_text(size=6), axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))+
+  ggtitle("Census Respondents Count by Province")+
+  geom_bar()
+
+
+```
+
+Figure 1 depicts the response breakdown by province for the PES survey and the census. We can see that the proportions are relatively similar between  the two surveys, however, some provinces such as Prince Edward Island are under-represented in the Post Election Survey. Therefore, post-stratification will be particularly useful for this analysis.
+\newpage
+
+## Model
+
+
+The following is an outline of the variables used in the model:
+
+
+| Age  |Gender | Language_Home | Province                  |
+|-----:|-------|---------------|---------------------------|
+|   18 |  Man  |    French     | Alberta                   |
+|    . | Woman | Not French    | British Columbia          |
+|    . |       |               | Manitoba                  |
+|    . |       |               | New Brunswick             |
+|   99 |       |               | Newfoundland and Labrador |
+|      |       |               | Nova Scotia               |
+|      |       |               | Ontario                   |
+|      |       |               | Prince Edward Island      |
+|      |       |               | Quebec                    |
+|      |       |               | Saskatchewan              |
+
+
+|     Age is a numerical variable while the rest are categorical. For the purpose of our model, gender, language_home, and province are all treated as dummy variables. Meaning, if the respondent is from Ontario, for example, there is an indicator function that marks $x_{Ontario}$ as 1, while all other province variables get assigned a 0. 
+
+Then, a logistic regression model is built of the following form:
+
+
+\begin{align*}
+log(\frac{\hat{p}_{Liberal}}{1-\hat{p}_{Liberal}}) =  \beta_{0} & + \beta_{1}x_{age} + \beta_{2}x_{Woman} + \beta_{3}x_{Not\ French}+ \beta_{4}x_{British\ Columbia}\\
+&+ \beta_{5}x_{Manitoba} + \beta_{6}x_{New\ Brunswick} + \beta_{7}x_{Newfoundland\&Labrador}\\
+&+ \beta_{8}x_{Nova\ Scotia} +\beta_{9}x_{Ontario} + \beta_{10}x_{PEI} +\beta_{11}x_{Quebec} + \beta_{12}x_{Saskatchewan }\\
+\end{align*}
+
+To illustrate how the model works, here is an example: 
+
+Given an individual's data:
+
+age: 22   
+Gender: Woman  
+Language_home: Not French  
+Province: Ontario   
+
+This would translate to:    
+$x_{age} = 22$   
+$x_{Woman} = 1$  
+$x_{Not\ French} = 1$ 
+$x_{Ontario} = 1$   
+$x_{all\ other\ provinces}=0$  
+
+
+We would plug the information into our model to get:
+
+
+\begin{align*}
+log(\frac{\hat{p}_{Liberal}}{1-\hat{p}_{Liberal}}) = \beta_{0} &+ \beta_{1}(22) + \beta_{2}(1) + \beta_{3}(1)
++ \beta_{4}(0)\\ 
+&+ \beta_{5}(0) + \beta_{6}(0)  + \beta_{7}(0)\\
+&+ \beta_{8}(0) + \beta_{9}(1) + \beta_{10}(0) +\beta_{11}(0) + \beta_{12}(0)\\
+\end{align*}
+
+
+
+Ultimately, we are interested in $\hat{p}_{Liberal}$. So we would solve:
+
+\begin{align*}
+\hat{p}_{Liberal} = \frac{e^{\beta_{0} + \beta_{1}*22 + \beta_{2} + \beta_{3} + \beta_{9}}}{1 + e^{\beta_{0} + \beta_{1}*22 + \beta_{2} + \beta_{3} + \beta_{9}}}
+\end{align*}
+
+
+|     Using r language, a general linear model with logistic regression was run to estimate the beta coefficients as listed below. For age, $\beta{1}$ indicates that with every unit increase in age, the log likelihood of voting liberal increases by 0.0032. For all other variables, an indication of province, gender, or home_language would increase log likelihood by the appropriate beta. For example, 1.217 increase for Ontario.  
+
+```{r, include=FALSE}
+#Liberal Model
+lib_model <- glm(vote_liberal ~ age + gender + province + language_home, 
+            data=clean_data, family=binomial)
+
+# Model Results
+summary(lib_model)
+
+#Conservative Model
+con_model <- glm(vote_conservative ~ age + gender + province + language_home, 
+            data=clean_data, family=binomial)
+
+summary(con_model)
+```
+
+```{r, echo=FALSE}
+#push model results out in a neat table format
+pander(lib_model)
+```
+
+|     In the leftmost column of table 2, we can see that all beta coefficients, except for that of Saskatchewan's, have a p-value of less than 0.05. This indicates that those coefficients are significant in determining the log likelihood of an individual voting conservative.
+
+
+## Post-Stratification
+
+|     To estimate the popular vote results for the Liberal Party given a 100% voter turnout (in the 10 provinces), we use our logistic model to predict voting probabilities in the population. Then, we multiply the probability for each group's voting by the size of the group. For example, there are 7 people who are 18 years old, men, speak French at home, and live in Quebec.Our model predicts $\hat{y}$ for this group to be 0.291. Then, this is multiplied by 7, and is similarly added to all the the other products of bin size and voting estimate. This represents the numerator in the equation below:
+
+$$\hat{y}^{PS} = \frac{\sum{N}_{j}\hat{y}_{i}}{\sum{N}_{j}}$$
+
+|     Then, we divide by the total population in the census. 
+
+```{r, include=FALSE}
+# Liberals estimate
+census_grouped$logodds_estimate <-
+  lib_model %>%
+  predict(newdata = census_grouped)
+
+census_grouped$estimate <-
+  exp(census_grouped$logodds_estimate)/(1+exp(census_grouped$logodds_estimate))
+
+census_grouped %>%
+  ungroup(age, gender, province, language_home) %>% 
+  mutate(alp_predict_prop = estimate*n) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n))
+```
+
+
+```{r, include=FALSE}
+# Conservatives estimate
+census_grouped$logodds_estimate <-
+  con_model %>%
+  predict(newdata = census_grouped)
+
+census_grouped$estimate <-
+  exp(census_grouped$logodds_estimate)/(1+exp(census_grouped$logodds_estimate))
+
+census_grouped %>%
+  ungroup(age, gender, province, language_home) %>% 
+  mutate(alp_predict_prop = estimate*n) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n))
+```
+
+\newpage
+
+## Results
+
+|     Using logistic regression with post stratification, we estimate that with a 100% voter turnout, the Liberal Party would have received 34.4% of the popular vote in the 2019 Canadian Federal Election. In reality, Liberals only won 33.1% of the popular vote, while Conservatives won 34.4%. Our model was rerun to predict the likelihood of voting conservative, and after similar post-stratification, we estimate that only 29.5% of Canadians would have voted for the Conservative Party. 
+
+|     For model results of voting likelihood for the Conservative Party, please see appendix.
+
+|     Experts note that this election was historically significant, marking only the second time in Canadian history that a governing party takes power with such a low share of the votes. In the past, there was only one time that a party formed government having earned less than 35% of the popular vote - this incident was the 1867 election in which John A. Macdonald won. Thus, despite the Liberal Party gaining more votes if everyone had voted, they would still earn one of the lowest popular vote proportion given their win. 
+
+```{r, echo=FALSE, fig.cap = "Liberal Voting Likelihood by Age"}
+clean_data %>% 
+  mutate(vote_liberal_str = ifelse(vote_liberal==1,"Liberal","Not Liberal")) %>%
+  mutate(vote_liberal_str = factor(vote_liberal_str, levels = c("Liberal", "Not Liberal"))) %>% 
+  ggplot(mapping=aes(x=age))+
+  geom_density(aes(color=vote_liberal_str))+
+  scale_color_manual(values=c("red1", "grey38"))+
+  ggtitle("Liberal Voting Likelihood by Age")+
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+|     Figure 2 depicts Liberal party voting density by age. Interestingly, the liberal (red) curve and not liberal (grey) curve follow a somewhat similar pattern. It is worth noting that up until approximately age 40, one is slightly more likely to vote liberal. Then, from age 40 to approximately 60, the grey curve lies above the red curve, indicating that individuals in that age group are more likely not to vote liberal.
+
+```{r, echo=FALSE, fig.cap = "Liberal Vote Proportion by Province"}
+clean_data %>% 
+  mutate(vote_liberal_str = ifelse(vote_liberal==1,"Liberal","Not Liberal")) %>%
+  mutate(vote_liberal_str = factor(vote_liberal_str, levels = c("Liberal", "Not Liberal"))) %>% 
+  ggplot(mapping = aes(x=province, fill = vote_liberal_str))+
+  scale_x_discrete()+
+  ggtitle("Liberal Vote Proportion by Province")+
+  ylab("vote count proportion")+
+  theme(plot.title = element_text(hjust = 0.5), axis.text=element_text(size=6), axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))+
+  scale_fill_manual(values=c("red1", "grey36"))+
+  geom_bar(position = "fill")
+```
+
+|     Above is a graph depicting the Liberal Vote by Province. It is apparent that in maritime provinces, namely New Brunswick, Nova Scotia, and PEI, almost 50% of voters indicate they voted liberal. Alberta and Saskatchewan have the lowest proportion of liberal voters.
+
+```{r, echo=FALSE, fig.cap = "Liberal Vote Proportion by Gender"}
+clean_data %>% 
+  mutate(vote_liberal_str = ifelse(vote_liberal==1,"Liberal","Not Liberal")) %>%
+  mutate(vote_liberal_str = factor(vote_liberal_str, levels = c("Liberal", "Not Liberal"))) %>% 
+  ggplot(mapping = aes(x=gender, fill = vote_liberal_str))+
+  scale_x_discrete()+
+  ggtitle("Liberal Vote Proportion by Gender")+
+  ylab("vote count proportion")+
+  theme(plot.title = element_text(hjust = 0.5), axis.text=element_text(size=6), axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))+
+  scale_fill_manual(values=c("red1", "grey36"))+
+  geom_bar(position = "fill")
+```
+
+|     Figure 4 indicates women are slightly more likely to vote Liberal. This is consistent with our model results, which showed that being a woman increases the log likelihood of voting liberal by 0.174.
+
+\newpage
+
+## Discussion
+
+|     In the interest of predicting the popular vote outcome of the 2019 Canadian Federal Election with a 100% voter turnout, we ran a logistic regression model with the response variables age, gender, province, and language spoken at home to determine the likelihood of an individual voting for the Liberal Party.
+
+
+|     Based off the estimated proportion of voters in favour of voting of the Liberal Party being 34.4%, our model predicted that the 2019 election would have earned the Liberal Party a bigger share of the popular vote if everyone had voted. However, 34.4% of the popular vote would still have been a record low number for popular vote  share for a party that takes power. 
+
+
+|     Individuals living in maritime provinces, as well as Ontario, were most likely to vote Liberal. Men and women had relatively similar proportions of voting for the Liberal Party, but women were slightly more likely to do so. Individuals whose primary home language was not French were also more likely to vote Liberal. Although age was a significant factor in our model, voters had similar voting patterns in all age groups, except 40-60 year olds who were slightly more likely not to vote Liberal. 
+
+
+### Weaknesses
+
+|     The biggest weakness in our 2 data sets was the inconsistency of gender/sex categorization. In the GSS dataset, only sex was coded, with exclusively two options: male and female. This fact, alone, presents a major weakness in the dataset as those two options may not represent all possible representations of an individual. In the Post Election Survey dataset, the gender question had 3 options: Woman, Man, or Other. For the purpose of post-stratification, the two categories had to be the same, so all "Other" responses were imputed as woman. And in the GSS dataset, all female responses were assumed to be equivalent to "woman", while male responses were equivalent to "man". Naturally, this imputation and assumption may create a bias that does not represent the Canadian population accurately. 
+
+|     In addition, the GSS dataset had no information about individuals from the 3 territories of Canada. Thus, our 100% voter participation rate only accounts for those living in the 10 provinces of Canada.
+
+
+### Next Steps
+
+|     In the future, this analysis should be rerun using  a different set of census data - preferably one that has information about respondents' gender. 
+
+\newpage
+
+## Appendix
+
+Below are model results for our logistic regression model run to predict conservative voting probabilities.
+
+```{r, echo=FALSE}
+pander(con_model)
+```
+
+## References 
+
+Alexander, R. and Caetano, S. (2020). "gss_cleaning,.R". Retrieved from: https://q.utoronto.ca/courses/184060
+
+Brean, J. (2019). "All-time low share of popular vote is enough for Liberals to win power". National Post. Retrieved from https://nationalpost.com/news/politics/election-2019/canadian-federal-election-2019-liberals-justin-trudeau-win
+
+Statistics Canada. (2020). General Social Survey Cycle 31: Families. 45250001 Issue no. 2019001. pages 3-11.
+
+Statistics Canada. (2020). "Reasons for not voting in the federal election, October 21, 2019". Retrieved from: https://www150.statcan.gc.ca/n1/daily-quotidien/200226/dq200226b-eng.htm
+
+Stephenson, L. et al. (2020). "2019 Canadian Election Study - Online Survey", https://doi.org/10.7910/DVN/DUS88V, Harvard Dataverse, V1
+
+
